@@ -1,0 +1,69 @@
+# CraftyVecta: Crafty Controller with the vecta gateway in front.
+#
+#   cp .env.example .env         # domain, secrets and Crafty's owner token
+#   docker compose up -d --build
+#
+# Only the panel and the gateway are published. Minecraft servers listen on
+# the private backend network, so players can only join through vecta.
+name: craftyvecta
+
+services:
+  crafty:
+    image: ${CRAFTYVECTA_IMAGE:-craftyvecta:latest}
+    build:
+      context: .
+      additional_contexts:
+        vecta: ${VECTA_SRC:-https://github.com/KilianSen/vecta.git#master}
+      args:
+        CRAFTY_VERSION: ${CRAFTY_VERSION:-4.10.8}
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Etc/UTC}
+      VECTA_TOKEN: ${VECTA_CRAFTY_TOKEN:?set VECTA_CRAFTY_TOKEN in .env}
+      VECTA_GATEWAY: ${VECTA_GATEWAY:-http://vecta:8080}
+      VECTA_BACKEND_HOST: ${VECTA_BACKEND_HOST:-crafty}
+      VECTA_PORT_RANGE: ${VECTA_PORT_RANGE:-25500-25999}
+      VECTA_DOMAIN: ${VECTA_DOMAIN:-}
+      VECTA_PUBLIC_URL: ${VECTA_PUBLIC_URL:-}
+    ports:
+      - "${PANEL_PORT:-8443}:8443"
+    volumes:
+      - ./data/backups:/crafty/backups
+      - ./data/logs:/crafty/logs
+      - ./data/servers:/crafty/servers
+      - ./data/config:/crafty/app/config
+      - ./data/import:/crafty/import
+    networks:
+      backend:
+        ipv4_address: ${CRAFTY_IP:-172.31.66.10}
+    depends_on:
+      - vecta
+
+  vecta:
+    image: ${VECTA_IMAGE:-vecta:latest}
+    build:
+      context: ${VECTA_SRC:-https://github.com/KilianSen/vecta.git#master}
+    restart: unless-stopped
+    command: ["gateway", "-config", "/etc/vecta/gateway.json"]
+    env_file: .env
+    volumes:
+      - ./gateway.json:/etc/vecta/gateway.json:ro
+      - vecta-data:/data
+    ports:
+      - "${MC_PORT:-25565}:25565"   # Minecraft (or an NPM stream target)
+      - "${API_PORT:-8080}:8080"    # owner API, status page, /metrics
+    networks:
+      - backend
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 15s
+
+networks:
+  backend:
+    ipam:
+      config:
+        - subnet: ${BACKEND_SUBNET:-172.31.66.0/24}
+
+volumes:
+  vecta-data:
