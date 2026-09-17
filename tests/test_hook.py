@@ -68,7 +68,7 @@ def install(root):
         "VECTA_STATE_DIR": str(root / "vecta"),
         "PATH": "/usr/bin",
     }
-    hook.install(environ, is_free=lambda p: True)
+    hook.install(environ, is_free=lambda p, protocol="tcp": True)
     return environ
 
 

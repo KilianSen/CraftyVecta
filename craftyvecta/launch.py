@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from . import command as commands
-from . import props, serverfiles
+from . import props, serverfiles, voicechat
 from .config import parse_bool
 
 OVERRIDE_FILE = "vecta.override.properties"
@@ -27,8 +27,9 @@ PASSTHROUGH = (
     "debug",
 )
 # Override keys CraftyVecta reads itself.
-OWN_KEYS = ("enabled", "serverId", "allowOfflineMode")
+OWN_KEYS = ("enabled", "serverId", "allowOfflineMode", "voiceChat", "sidePorts", "sidePortHook")
 _UUID = re.compile(r"^[A-Za-z0-9-]+$")
+_SIDE_PORT = re.compile(r"^([a-z0-9][a-z0-9-]{0,31}):(tcp|udp):(\d{1,5})$")
 
 
 @dataclass
@@ -99,10 +100,19 @@ def prepare(server, settings, state, is_free):
         "address": f"{settings.backend_host}:{port}",
     }
     values.update((key, overrides[key]) for key in PASSTHROUGH if key in overrides)
+    serverfiles.apply(server.path, fixes, result)
+    side_ports = _side_ports(server, overrides, settings, state, is_free, result)
+    if side_ports:
+        values["sidePorts"] = ",".join(side_ports)
+        # The dispatcher handles CraftyVecta's voice port and passes every
+        # other side port to the server's own hook, if it has one.
+        hook = ["sh", settings.hooks_dir.rstrip("/") + "/sideport.sh"]
+        values["sidePortHook"] = " ".join(hook + overrides.get("sidePortHook", "").split())
+    elif overrides.get("sidePortHook", "").strip():
+        result.warn(f"{OVERRIDE_FILE}: sidePortHook without sidePorts is ignored")
     config = os.path.join(settings.state_dir, "servers", f"{server.uuid}.properties")
     props.write_atomic(config, props.dump(values), mode=0o600)
 
-    serverfiles.apply(server.path, fixes, result)
     if settings.fix_throttle:
         serverfiles.fix_throttle(server.path, result)
     result.command = commands.inject(command, kind, settings.jar, config)
@@ -121,7 +131,7 @@ def _game_port(server, command, settings, state, is_free, result):
     current = _int(existing.get("server-port")) or server.db_port
     if not settings.autoports:
         return current
-    port = state.claim_port(server.uuid, current, settings.port_range, is_free)
+    port = state.claim_port(server.uuid, current, settings.port_range, lambda p: is_free(p, "tcp"))
     changes = {"server-port": str(port)}
     if parse_bool(existing.get("enable-query"), False):
         changes["query.port"] = str(port)
@@ -131,6 +141,40 @@ def _game_port(server, command, settings, state, is_free, result):
         result.info(f"server.properties: server-port={port}")
     result.port = port
     return port
+
+
+def _side_ports(server, overrides, settings, state, is_free, result):
+    """Returns the side ports to declare, as name:protocol:port."""
+    ports = []
+    for entry in overrides.get("sidePorts", "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        m = _SIDE_PORT.match(entry)
+        if not m or not 1 <= int(m.group(3)) <= 65535:
+            result.warn(f"{OVERRIDE_FILE}: sidePorts: ignoring {entry!r} (expected name:tcp|udp:port)")
+        elif m.group(1) == voicechat.SIDE_PORT or any(p.startswith(m.group(1) + ":") for p in ports):
+            result.warn(f"{OVERRIDE_FILE}: sidePorts: ignoring {entry!r} (name already in use)")
+        else:
+            ports.append(entry)
+
+    wanted = overrides.get("voiceChat")
+    if not parse_bool(wanted, settings.voice_chat):
+        return ports
+    path = voicechat.config_file(server.path, forced=parse_bool(wanted, False))
+    if path is None:
+        return ports
+    current = _int(props.read(path).get("port"))
+    try:
+        port = state.claim_port(
+            server.uuid, current, settings.voice_port_range, lambda p: is_free(p, "udp"), field="voicePort"
+        )
+    except RuntimeError as e:
+        result.warn(f"Simple Voice Chat: {e}; voice chat is not reachable through vecta")
+        return ports
+    voicechat.configure(path, port, settings.backend_host, result)
+    result.info(f"Simple Voice Chat on UDP {port}, public address assigned by the gateway")
+    return [f"{voicechat.SIDE_PORT}:udp:{port}"] + ports
 
 
 def _command_port(command):
@@ -149,10 +193,11 @@ def _int(value):
         return None
 
 
-def port_is_free(port):
-    """Whether nothing listens on the TCP port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        if os.name != "nt":
+def port_is_free(port, protocol="tcp"):
+    """Whether nothing listens on the port."""
+    kind = socket.SOCK_DGRAM if protocol == "udp" else socket.SOCK_STREAM
+    with socket.socket(socket.AF_INET, kind) as s:
+        if os.name != "nt" and kind == socket.SOCK_STREAM:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("0.0.0.0", port))

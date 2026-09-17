@@ -36,7 +36,10 @@ class Settings:
     port_range: tuple = (25500, 25999)
     rcon_offset: int = 1000
     fix_throttle: bool = True
+    voice_chat: bool = True
+    voice_port_range: tuple = (24000, 24499)
     jar: str = "/crafty/vecta/vecta.jar"
+    hooks_dir: str = "/crafty/vecta/hooks"
     state_dir: str = "app/config/vecta"
     branding: bool = True
     domain: str = ""
@@ -54,7 +57,12 @@ class Settings:
             port_range=parse_range(env["VECTA_PORT_RANGE"]) if env.get("VECTA_PORT_RANGE") else d.port_range,
             rcon_offset=int(env.get("VECTA_RCON_OFFSET", d.rcon_offset)),
             fix_throttle=parse_bool(env.get("VECTA_FIX_THROTTLE"), d.fix_throttle),
+            voice_chat=parse_bool(env.get("VECTA_VOICE_CHAT"), d.voice_chat),
+            voice_port_range=(
+                parse_range(env["VECTA_VOICE_PORT_RANGE"]) if env.get("VECTA_VOICE_PORT_RANGE") else d.voice_port_range
+            ),
             jar=env.get("VECTA_JAR", d.jar),
+            hooks_dir=env.get("VECTA_HOOKS_DIR", d.hooks_dir),
             state_dir=os.path.abspath(env.get("VECTA_STATE_DIR", d.state_dir)),
             branding=parse_bool(env.get("VECTA_BRANDING"), d.branding),
             domain=env.get("VECTA_DOMAIN", d.domain).strip(),

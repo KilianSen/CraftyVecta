@@ -65,26 +65,27 @@ class State:
             self._save()
             return entry["id"], problem
 
-    def claim_port(self, uuid, current, port_range, is_free):
+    def claim_port(self, uuid, current, port_range, is_free, field="port"):
         """Returns a port in port_range that no other Crafty server holds.
 
         The server keeps its recorded port, else adopts current when that
         fits, else gets the lowest usable one. is_free(port) tells whether
-        nothing else listens there.
+        nothing else listens there. field names the kind of port ("port" for
+        the game port, "voicePort" for Simple Voice Chat).
         """
         lo, hi = port_range
         with self.lock:
             entry = self.servers.setdefault(uuid, {})
 
             def usable(port):
-                return port is not None and lo <= port <= hi and not self._taken("port", port, uuid) and is_free(port)
+                return port is not None and lo <= port <= hi and not self._taken(field, port, uuid) and is_free(port)
 
-            port = next((p for p in (entry.get("port"), current) if usable(p)), None)
+            port = next((p for p in (entry.get(field), current) if usable(p)), None)
             if port is None:
                 port = next((p for p in range(lo, hi + 1) if usable(p)), None)
             if port is None:
                 raise RuntimeError(f"no free port left in {lo}-{hi}")
-            if entry.get("port") != port:
-                entry["port"] = port
+            if entry.get(field) != port:
+                entry[field] = port
                 self._save()
             return port

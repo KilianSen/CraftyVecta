@@ -23,7 +23,7 @@ def env(tmp_path):
 def run(env, command=PAPER, settings=None, type="minecraft-java"):
     server_dir, default_settings, state = env
     server = launch.Server(UUID, "My Server", str(server_dir), type, list(command), 25565)
-    return launch.prepare(server, settings or default_settings, state, lambda p: True)
+    return launch.prepare(server, settings or default_settings, state, lambda p, protocol="tcp": True)
 
 
 def config_path(env):
@@ -222,3 +222,103 @@ def test_throttle_fix_only_touches_the_default(env):
     bukkit.write_text("settings:\n  connection-throttle: 1000\n")
     run(env)
     assert bukkit.read_text() == "settings:\n  connection-throttle: 1000\n"
+
+
+SVC_FABRIC = "voicechat-fabric-1.21.1-2.6.22.jar"
+
+
+def voice_file(server_dir, folder="config"):
+    return server_dir / folder / "voicechat" / "voicechat-server.properties"
+
+
+def test_simple_voice_chat_gets_a_port_and_a_side_port(env):
+    server_dir, settings, state = env
+    (server_dir / "mods").mkdir()
+    (server_dir / "mods" / SVC_FABRIC).write_bytes(b"")
+    r = run(env)
+    assert props.read(voice_file(server_dir)) == {"port": "24000"}
+    config = config_of(env)
+    assert config["sidePorts"] == "voicechat:udp:24000"
+    assert config["sidePortHook"] == f"sh {settings.hooks_dir}/sideport.sh"
+    assert "Simple Voice Chat on UDP 24000, public address assigned by the gateway" in messages(r, "info")
+    assert messages(r, "warning") == []
+
+    # Another server gets the next port; this one keeps its own.
+    state.claim_port("other", None, settings.voice_port_range, lambda p: True, field="voicePort")
+    run(env)
+    assert config_of(env)["sidePorts"] == "voicechat:udp:24000"
+
+
+def test_simple_voice_chat_plugin_config_is_fixed(env):
+    server_dir = env[0]
+    (server_dir / "plugins").mkdir()
+    (server_dir / "plugins" / "voicechat-bukkit-2.6.1.jar").write_bytes(b"")
+    f = voice_file(server_dir, "plugins")
+    f.parent.mkdir(parents=True)
+    f.write_text("# Simple Voice Chat server config\nport=24454\nbind_address=127.0.0.1\nvoice_host=old:1\n")
+    run(env)
+    # SVC's default port fits the voice range, so the server keeps it.
+    assert f.read_text() == "# Simple Voice Chat server config\nport=24454\nbind_address=\nvoice_host=old:1\n"
+    assert config_of(env)["sidePorts"] == "voicechat:udp:24454"
+
+
+@pytest.mark.parametrize(
+    "jar, override, settings_kw, expected",
+    [
+        ("voicechat_interaction-fabric-1.21.1-1.0.0.jar", None, {}, None),
+        (None, "voiceChat=true\n", {}, "voicechat:udp:24000"),
+        (SVC_FABRIC, "voiceChat=false\n", {}, None),
+        (SVC_FABRIC, None, {"voice_chat": False}, None),
+        (None, "voiceChat=true\n", {"voice_chat": False}, "voicechat:udp:24000"),
+    ],
+)
+def test_simple_voice_chat_detection(env, jar, override, settings_kw, expected):
+    server_dir, settings, _ = env
+    (server_dir / "mods").mkdir()
+    if jar:
+        (server_dir / "mods" / jar).write_bytes(b"")
+    if override:
+        (server_dir / launch.OVERRIDE_FILE).write_text(override)
+    run(env, settings=dataclasses.replace(settings, **settings_kw))
+    assert config_of(env).get("sidePorts") == expected
+    assert voice_file(server_dir).exists() == bool(expected)
+
+
+def test_simple_voice_chat_without_free_port(env):
+    server_dir, settings, state = env
+    (server_dir / "mods").mkdir()
+    (server_dir / "mods" / SVC_FABRIC).write_bytes(b"")
+    small = dataclasses.replace(settings, voice_port_range=(24000, 24000))
+    state.claim_port("other", 24000, small.voice_port_range, lambda p: True, field="voicePort")
+    r = run(env, settings=small)
+    assert "sidePorts" not in config_of(env)
+    assert r.command[1].startswith("-javaagent:")
+    assert messages(r, "warning") == [
+        "Simple Voice Chat: no free port left in 24000-24000; voice chat is not reachable through vecta"
+    ]
+
+
+def test_own_side_ports_and_hook(env):
+    server_dir, settings, _ = env
+    (server_dir / "mods").mkdir()
+    (server_dir / "mods" / SVC_FABRIC).write_bytes(b"")
+    (server_dir / launch.OVERRIDE_FILE).write_text(
+        "sidePorts=map:tcp:8100, voicechat:udp:1, bad, map:udp:1, votes:tcp:8192\nsidePortHook=./hooks/ports.sh --quiet\n"
+    )
+    r = run(env)
+    config = config_of(env)
+    assert config["sidePorts"] == "voicechat:udp:24000,map:tcp:8100,votes:tcp:8192"
+    assert config["sidePortHook"] == f"sh {settings.hooks_dir}/sideport.sh ./hooks/ports.sh --quiet"
+    assert messages(r, "warning") == [
+        f"{launch.OVERRIDE_FILE}: sidePorts: ignoring 'voicechat:udp:1' (name already in use)",
+        f"{launch.OVERRIDE_FILE}: sidePorts: ignoring 'bad' (expected name:tcp|udp:port)",
+        f"{launch.OVERRIDE_FILE}: sidePorts: ignoring 'map:udp:1' (name already in use)",
+    ]
+
+
+def test_side_port_hook_without_side_ports(env):
+    server_dir = env[0]
+    (server_dir / launch.OVERRIDE_FILE).write_text("sidePortHook=./x.sh\n")
+    r = run(env)
+    assert "sidePortHook" not in config_of(env)
+    assert messages(r, "warning") == [f"{launch.OVERRIDE_FILE}: sidePortHook without sidePorts is ignored"]

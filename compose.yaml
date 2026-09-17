@@ -3,7 +3,7 @@
 #   cp .env.example .env         # domain, secrets and Crafty's owner token
 #   docker compose up -d --build
 #
-# Only the panel and the gateway are published. Minecraft servers listen on
+# Only the panel and the gateway (with its side port range) are published. Minecraft servers listen on
 # the private backend network, so players can only join through vecta.
 name: craftyvecta
 
@@ -23,6 +23,8 @@ services:
       VECTA_GATEWAY: ${VECTA_GATEWAY:-http://vecta:8080}
       VECTA_BACKEND_HOST: ${VECTA_BACKEND_HOST:-crafty}
       VECTA_PORT_RANGE: ${VECTA_PORT_RANGE:-25500-25999}
+      VECTA_VOICE_CHAT: ${VECTA_VOICE_CHAT:-true}
+      VECTA_VOICE_PORT_RANGE: ${VECTA_VOICE_PORT_RANGE:-24000-24499}
       VECTA_DOMAIN: ${VECTA_DOMAIN:-}
       VECTA_PUBLIC_URL: ${VECTA_PUBLIC_URL:-}
     ports:
@@ -52,6 +54,9 @@ services:
     ports:
       - "${MC_PORT:-25565}:25565"   # Minecraft (or an NPM stream target)
       - "${API_PORT:-8080}:8080"    # owner API, status page, /metrics
+      # Side ports (Simple Voice Chat and others). Must match VECTA_SIDEPORT_RANGE.
+      - "${VECTA_SIDEPORT_RANGE:-24500-24599}:${VECTA_SIDEPORT_RANGE:-24500-24599}/tcp"
+      - "${VECTA_SIDEPORT_RANGE:-24500-24599}:${VECTA_SIDEPORT_RANGE:-24500-24599}/udp"
     networks:
       - backend
     read_only: true

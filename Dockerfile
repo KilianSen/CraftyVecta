@@ -14,6 +14,9 @@ RUN VERSION="$VECTA_VERSION" sh /src/build.sh
 FROM registry.gitlab.com/crafty-controller/crafty-4:${CRAFTY_VERSION}
 COPY --from=jar --chown=crafty:root /src/build/vecta.jar /crafty/vecta/vecta.jar
 COPY --chown=crafty:root craftyvecta /crafty/vecta/craftyvecta
+# Side port hooks: the dispatcher and vecta's Simple Voice Chat hook.
+COPY --chown=crafty:root --chmod=755 hooks/sideport.sh /crafty/vecta/hooks/sideport.sh
+COPY --from=vecta --chown=crafty:root --chmod=755 examples/sideport-hooks/simple-voice-chat.sh /crafty/vecta/hooks/simple-voice-chat.sh
 # New files next to Crafty's static assets, for the "with vecta" badge.
 COPY --chown=crafty:root craftyvecta/static/vecta /crafty/app/frontend/static/assets/vecta
 

@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      vecta_ref:
+        description: vecta branch, tag or commit the server jar is built from
+        default: master
+      push:
+        description: Publish the image to GHCR (tagged with the commit SHA)
+        type: boolean
+        default: false
+
+env:
+  VECTA_REF: ${{ inputs.vecta_ref || 'master' }}
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12" # what the Crafty 4.10.8 image runs
+      - run: pip install pytest
+      - run: python -m pytest -q
+      - name: compose.yaml is valid
+        run: |
+          cp .env.example .env
+          VECTA_CRAFTY_TOKEN=ci docker compose config -q
+
+  image:
+    # Builds the multi-arch image on every push. Publishes it to GHCR for
+    # version tags (v1.2.3 -> ghcr.io/<owner>/<repo>:1.2.3 and :latest), or
+    # from a manual run with "push".
+    needs: unit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUSH: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.push == true }}
+    steps:
+      - uses: actions/checkout@v4
+      # The image's last step runs Crafty's Python for the target platform.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=sha
+      - if: env.PUSH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-contexts: vecta=https://github.com/KilianSen/vecta.git#${{ env.VECTA_REF }}
+          platforms: linux/amd64,linux/arm64
+          build-args: VECTA_VERSION=${{ env.VECTA_REF }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          push: ${{ env.PUSH == 'true' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
